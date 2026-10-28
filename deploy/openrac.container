@@ -24,7 +24,8 @@ PublishPort=127.0.0.1:3000:3000
 
 # Public address, used for absolute URLs in page metadata.
 Environment=SITE_URL=https://openrac.dev
-# Optional: a file with GITHUB_TOKEN=... raises the GitHub API rate limit for the activity feed.
+# Recommended: a file with GITHUB_TOKEN=... (a fine-grained token with no permissions) raises the
+# GitHub API rate limit from 60 calls an hour, which the activity feed alone outruns, to 5000.
 # Create it first (the unit does not start if the file is missing), then uncomment:
 #EnvironmentFile=%h/.config/openrac/openrac.env
 
