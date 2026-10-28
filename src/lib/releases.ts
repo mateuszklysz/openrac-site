@@ -125,12 +125,24 @@ export interface UpdaterManifest {
   platforms: Record<string, { url: string }>;
 }
 
-/** The manifest's entry for each system's main file. */
-const MANIFEST_KEYS: [PlatformId, string][] = [
-  ["windows", "windows-x86_64-nsis"],
-  ["linux", "linux-x86_64-appimage"],
-  ["android", "android-aarch64"],
-];
+/**
+ * A build's updater manifest read as a release: every file it names, plus the Mac's disk image,
+ * which the manifest leaves out (a Mac updates from the app archive) and which keeps the build's
+ * X.Y.Z in its name. Sizes are not in the manifest (0).
+ */
+export function manifestRelease(manifest: UpdaterManifest, tag: string): GithubRelease {
+  const urls = new Set(Object.values(manifest.platforms).map((p) => p.url));
+  const mac = manifest.platforms["darwin-aarch64-app"]?.url;
+  if (mac) urls.add(mac.replace(/[^/]+$/, `OpenRAC.Launcher_${manifest.version.replace(/-.*/, "")}_universal.dmg`));
+  return {
+    tag_name: tag,
+    html_url: `https://github.com/${LAUNCHER_REPO}/releases/tag/${tag}`,
+    published_at: manifest.pub_date ?? null,
+    draft: false,
+    prerelease: false,
+    assets: [...urls].map((url) => ({ name: decodeURIComponent(url.split("/").pop() ?? ""), browser_download_url: url, size: 0 })),
+  };
+}
 
 /**
  * The development build as the panel shows it, from its updater manifest: the version and time of
@@ -140,14 +152,7 @@ const MANIFEST_KEYS: [PlatformId, string][] = [
  */
 export function devFromManifest(manifest: UpdaterManifest): DevBuild {
   const files: DevBuild["files"] = {};
-  for (const [id, key] of MANIFEST_KEYS) {
-    const url = manifest.platforms[key]?.url;
-    const c = url ? classify(decodeURIComponent(url.split("/").pop() ?? "")) : null;
-    if (url && c) files[id] = { label: c.label, url, size: 0 };
-  }
-  // A Mac updates from the app archive; a player wants the disk image beside it, which keeps the build's X.Y.Z in its name.
-  const mac = manifest.platforms["darwin-aarch64-app"]?.url;
-  if (mac) files.macos = { label: "Disk image (.dmg)", url: mac.replace(/[^/]+$/, `OpenRAC.Launcher_${manifest.version.replace(/-.*/, "")}_universal.dmg`), size: 0 };
+  for (const p of toLauncherRelease(manifestRelease(manifest, DEV_TAG)).platforms) if (p.main) files[p.id] = p.main;
   return { version: manifest.version, date: manifest.pub_date ?? "", url: DEV_PAGE, files };
 }
 
@@ -173,28 +178,36 @@ async function github<T>(path: string): Promise<T | null> {
 let lastRelease: LauncherRelease | null = null;
 let lastDev: DevBuild | null = null;
 
-/** The latest launcher release; the last one read if GitHub does not answer now; null before any. */
+/** A build's updater manifest, a release download (not the API, so outside its rate limit). Null if unreachable. */
+async function manifest(path: string, revalidate: number): Promise<UpdaterManifest | null> {
+  try {
+    const res = await fetch(`https://github.com/${LAUNCHER_REPO}/releases/${path}/latest.json`, { next: { revalidate }, signal: AbortSignal.timeout(10_000) });
+    return res.ok ? ((await res.json()) as UpdaterManifest) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The latest launcher release. From the API, which lists every file with its size; when the API
+ * does not answer (its rate limit, a timeout), from the release's updater manifest, which names
+ * the same main files without sizes; else the last one read; null before any.
+ */
 export async function getLauncherRelease(): Promise<LauncherRelease | null> {
   const releases = await github<GithubRelease[]>("releases?per_page=30");
   const release = releases && pickLatest(releases);
-  if (release) lastRelease = toLauncherRelease(release);
+  if (release) return (lastRelease = toLauncherRelease(release));
+  const latest = await manifest("latest/download", 300);
+  if (latest) lastRelease = toLauncherRelease(manifestRelease(latest, `launcher-v${latest.version}`));
   return lastRelease;
 }
 
 /**
- * The latest development build from master, read from its updater manifest (a release download, not
- * the API, so no rate limit) and cached for a minute; the last one read if GitHub does not answer
- * now; null before any.
+ * The latest development build from master, read from its updater manifest and cached for a
+ * minute; the last one read if GitHub does not answer now; null before any.
  */
 export async function getDevBuild(): Promise<DevBuild | null> {
-  try {
-    const res = await fetch(`https://github.com/${LAUNCHER_REPO}/releases/download/${DEV_TAG}/latest.json`, {
-      next: { revalidate: 60 },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (res.ok) lastDev = devFromManifest((await res.json()) as UpdaterManifest);
-  } catch {
-    // keep the last one
-  }
+  const latest = await manifest(`download/${DEV_TAG}`, 60);
+  if (latest) lastDev = devFromManifest(latest);
   return lastDev;
 }

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { detectPlatform } from "./platform.ts";
-import { classify, devFromManifest, pickLatest, toLauncherRelease, type GithubRelease } from "./releases.ts";
+import { classify, devFromManifest, manifestRelease, pickLatest, toLauncherRelease, type GithubRelease } from "./releases.ts";
 
 // The files of a launcher build, as its workflow names them.
 const NAMES = [
@@ -113,4 +113,38 @@ test("devFromManifest takes this build's version, time and main files from its u
   assert.equal(dev.files.macos?.url.split("/").pop(), "OpenRAC.Launcher_0.9.1_universal.dmg");
   // a system whose build failed is left out of the manifest, and so of the panel
   assert.equal(devFromManifest({ version: "0.9.1-dev.1", platforms: {} }).files.macos, undefined);
+});
+
+test("manifestRelease reads a release's updater manifest as the panel's files, the Mac's disk image included", () => {
+  const at = (name: string) => ({ url: `https://github.com/OpenRAC/OpenRAC/releases/download/launcher-v0.9.0/${name}` });
+  const r = toLauncherRelease(
+    manifestRelease(
+      {
+        version: "0.9.0",
+        pub_date: "2026-10-25T15:29:04Z",
+        platforms: {
+          "linux-x86_64-rpm": at("OpenRAC.Launcher-0.9.0-1.x86_64.rpm"),
+          "android-aarch64": at("OpenRAC.Launcher_0.9.0_android-arm64-debug.apk"),
+          "linux-x86_64-deb": at("OpenRAC.Launcher_0.9.0_amd64.deb"),
+          "darwin-aarch64-app": at("OpenRAC.Launcher.app.tar.gz"),
+          "darwin-x86_64-app": at("OpenRAC.Launcher.app.tar.gz"),
+          "linux-x86_64-appimage": at("OpenRAC.Launcher_0.9.0_amd64.AppImage"),
+          "windows-x86_64-nsis": at("OpenRAC.Launcher_0.9.0_x64-setup.exe"),
+          "windows-x86_64-msi": at("OpenRAC.Launcher_0.9.0_x64_en-US.msi"),
+        },
+      },
+      "launcher-v0.9.0",
+    ),
+  );
+  assert.equal(r.version, "0.9.0");
+  assert.equal(r.url, "https://github.com/OpenRAC/OpenRAC/releases/tag/launcher-v0.9.0");
+  const main = Object.fromEntries(r.platforms.map((p) => [p.id, p.main?.url.split("/").pop()]));
+  assert.deepEqual(main, {
+    windows: "OpenRAC.Launcher_0.9.0_x64-setup.exe",
+    linux: "OpenRAC.Launcher_0.9.0_amd64.AppImage",
+    macos: "OpenRAC.Launcher_0.9.0_universal.dmg",
+    android: "OpenRAC.Launcher_0.9.0_android-arm64-debug.apk",
+  });
+  assert.equal(r.platforms[0].others.length, 1);
+  assert.equal(r.platforms[0].main?.size, 0);
 });

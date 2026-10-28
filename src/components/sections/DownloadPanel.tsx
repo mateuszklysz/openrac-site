@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, 
 import { SystemIcon } from "@/components/ui/icons";
 import { formatSize } from "@/lib/format";
 import { detectPlatform } from "@/lib/platform";
-import type { DevBuild, LauncherRelease, Platform, PlatformId } from "@/lib/releases";
+import type { DevBuild, Download, LauncherRelease, Platform, PlatformId } from "@/lib/releases";
 
 /** "25 October 2026", the same on the server and in the browser (UTC, one locale), so it never changes on hydration. */
 const longDate = (iso: string) => new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
@@ -26,6 +26,9 @@ function browserPlatform(): PlatformId | null {
   const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
   return detectPlatform(nav.userAgent, nav.userAgentData?.platform);
 }
+
+/** "AppImage · x86-64 · 137.45 MB"; without the size when it is not known (read from an updater manifest). */
+const withSize = (d: Download) => (d.size > 0 ? `${d.label} · ${formatSize(d.size)}` : d.label);
 
 /** A tick before a line of what a system needs. */
 const Check = () => (
@@ -101,7 +104,7 @@ function SystemCard({ p, i, mine, release, dev, devAgo, fallback }: {
           </a>
         )}
         <p className="mt-2 text-center text-[12px] text-dim">
-          {p.main ? `${p.main.label} · ${formatSize(p.main.size)}` : release ? "Not part of this release" : "Files are listed on GitHub"}
+          {p.main ? withSize(p.main) : release ? "Not part of this release" : "Files are listed on GitHub"}
         </p>
         {/* The newest build of master, for those who want what was merged today. Through the site's own
             redirect (app/download/dev), which finds the current file when it is followed. */}
@@ -128,7 +131,7 @@ function SystemCard({ p, i, mine, release, dev, devAgo, fallback }: {
                 <li key={d.url}>
                   <a href={d.url} download className="flex items-baseline gap-2 rounded-lg px-2 py-1.5 text-[13px] text-amber no-underline hover:bg-white/5">
                     <span className="min-w-0">{d.label}</span>
-                    <span className="ml-auto flex-none text-[12px] tabular-nums text-dim">{formatSize(d.size)}</span>
+                    {d.size > 0 && <span className="ml-auto flex-none text-[12px] tabular-nums text-dim">{formatSize(d.size)}</span>}
                   </a>
                 </li>
               ))}
