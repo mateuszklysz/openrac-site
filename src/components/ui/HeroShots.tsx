@@ -15,6 +15,54 @@ const stillOnly = () =>
 const AV1 = 'video/webm; codecs="av01.0.08M.08"';
 
 /**
+ * A hidden log of what the clips do, for phones without dev tools: open the site once with
+ * ?debug-hero and it stays on for the tab (sessionStorage), drawn bottom left. Off for everyone else.
+ */
+const debugLog: string[] = [];
+const debugOn = () => {
+  try {
+    if (location.search.includes("debug-hero")) sessionStorage.setItem("debug-hero", "1");
+    return sessionStorage.getItem("debug-hero") === "1";
+  } catch {
+    return false;
+  }
+};
+const t0 = typeof performance === "undefined" ? 0 : performance.now();
+function dbg(message: string) {
+  if (typeof window === "undefined" || !debugOn()) return;
+  debugLog.push(`${((performance.now() - t0) / 1000).toFixed(1)} ${location.pathname} ${message}`);
+  if (debugLog.length > 40) debugLog.shift();
+}
+/** play() with the reason and the outcome in the debug log. */
+function tryPlay(v: HTMLVideoElement, why: string) {
+  dbg(`play ${why} clip=${v.dataset.clip} rs=${v.readyState} ns=${v.networkState} muted=${v.muted}/${v.hasAttribute("muted")}`);
+  return v.play().then(
+    () => dbg(`play ok ${why} clip=${v.dataset.clip}`),
+    (e: Error) => {
+      dbg(`play FAIL ${why} clip=${v.dataset.clip} ${e.name}: ${e.message}`);
+      throw e;
+    },
+  );
+}
+
+function HeroDebug() {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => tick((n) => n + 1), 500);
+    return () => window.clearInterval(t);
+  }, []);
+  if (!debugOn()) return null;
+  const videos = [...document.querySelectorAll<HTMLVideoElement>("video[data-clip]")];
+  return (
+    <pre className="pointer-events-none fixed left-2 top-16 z-50 max-h-[55vh] max-w-[calc(100vw-16px)] overflow-auto whitespace-pre-wrap rounded bg-black/85 p-2 font-mono text-[10px] leading-tight text-[#9f9]">
+      {videos.map((v) => `clip ${v.dataset.clip}: rs=${v.readyState} ns=${v.networkState} paused=${v.paused} t=${v.currentTime.toFixed(1)} err=${v.error?.code ?? "-"} op=${getComputedStyle(v).opacity} src=${v.currentSrc.split("/").pop() || "-"}`).join("\n")}
+      {"\n---\n"}
+      {debugLog.slice(-25).join("\n")}
+    </pre>
+  );
+}
+
+/**
  * Whether to play the AV1 files: only where they decode smoothly, and on a phone or tablet only in
  * hardware (a phone decoding AV1 in software drops frames and drains the battery); else the H.264
  * ones, which every device decodes in hardware. null until the browser has answered.
@@ -63,14 +111,15 @@ function HeroShotLayers({ at, off, idle, hidden, missing, lost }: { at: number; 
   });
 
   // A clip's own load events start it when it is the one showing and should run (onLoadedData, onCanPlay).
-  const startIfDue = (i: number) => (e: { currentTarget: HTMLVideoElement }) => {
+  const startIfDue = (i: number) => (e: { currentTarget: HTMLVideoElement; type: string }) => {
     const v = e.currentTarget;
-    if (i === live.current.at && live.current.run && v.paused) v.play().catch(() => {});
+    if (i === live.current.at && live.current.run && v.paused) tryPlay(v, e.type).catch(() => {});
   };
 
   // The clip coming in starts from its beginning; the one going out stops once it has faded.
   useEffect(() => {
     const video = videos.current[at];
+    dbg(`effect at=${at} off=${off} idle=${idle} still=${still} av1=${av1} video=${Boolean(video)}`);
     if (off || idle) {
       videos.current.forEach((v) => v?.pause());
       return;
@@ -79,12 +128,16 @@ function HeroShotLayers({ at, off, idle, hidden, missing, lost }: { at: number; 
     if (video && !still && av1 !== null) {
       // Files just added and not picked up yet: load them now, so the play() below waits for them
       // instead of being cancelled by their load (Safari otherwise keeps the first frame).
-      if (video.readyState === HTMLMediaElement.HAVE_NOTHING && !video.currentSrc) video.load();
+      if (video.readyState === HTMLMediaElement.HAVE_NOTHING && !video.currentSrc) {
+        dbg(`load() clip=${at}`);
+        video.load();
+      }
       video.currentTime = 0;
       // A browser refusing autoplay (a phone saving power) keeps the first frame until the first touch or key.
-      video.play().catch(() => {
+      tryPlay(video, "effect").catch(() => {
         const retry = () => {
-          if (live.current.run && videos.current[live.current.at]?.paused) videos.current[live.current.at]?.play().catch(() => {});
+          const v = videos.current[live.current.at];
+          if (live.current.run && v?.paused) tryPlay(v, "gesture").catch(() => {});
         };
         for (const type of ["pointerdown", "touchend", "keydown"]) addEventListener(type, retry, { once: true, passive: true });
       });
@@ -94,10 +147,15 @@ function HeroShotLayers({ at, off, idle, hidden, missing, lost }: { at: number; 
   }, [at, still, off, idle, av1]);
 
   // A hidden tab holds the clip where it is (the clock waits too); back on the tab it plays on from there.
+  // Only on a real change: on mount (coming back to the home page) the clip has no files yet, and a
+  // play() then is the one iOS Safari drops, unlike the first visit where it never ran.
+  const wasHidden = useRef(hidden);
   useEffect(() => {
+    if (wasHidden.current === hidden) return;
+    wasHidden.current = hidden;
     const video = videos.current[live.current.at];
     if (hidden) video?.pause();
-    else if (live.current.run && video?.paused) video.play().catch(() => {});
+    else if (live.current.run && video?.paused) tryPlay(video, "tab back").catch(() => {});
   }, [hidden]);
 
   return (
@@ -119,7 +177,15 @@ function HeroShotLayers({ at, off, idle, hidden, missing, lost }: { at: number; 
             poster={heroSrc(shot, ".webp")}
             muted
             playsInline
-            onPlaying={() => setWarm(true)}
+            data-clip={i}
+            onPlaying={() => {
+              dbg(`playing clip=${i}`);
+              setWarm(true);
+            }}
+            onPause={() => dbg(`paused clip=${i}`)}
+            onEmptied={() => dbg(`emptied clip=${i}`)}
+            onStalled={() => dbg(`stalled clip=${i}`)}
+            onError={(e) => dbg(`video error clip=${i} code=${e.currentTarget.error?.code}`)}
             // Backups for a play() a browser dropped while the files loaded: start once there is a frame.
             onCanPlay={startIfDue(i)}
             onLoadedData={startIfDue(i)}
@@ -133,7 +199,11 @@ function HeroShotLayers({ at, off, idle, hidden, missing, lost }: { at: number; 
             {/* The files come once the codec is chosen (the first frame shows meanwhile), so no clip loads twice. */}
             {av1 && <source src={heroSrc(shot, "-1080.webm")} type={AV1} />}
             {/* The last source failing too means the clip is not there: drop it. */}
-            {av1 !== null && <source src={heroSrc(shot, "-1080.mp4")} type="video/mp4" onError={() => lost(i)} />}
+            {av1 !== null && <source src={heroSrc(shot, "-1080.mp4")} type="video/mp4" onError={(e) => {
+                  const v = e.currentTarget.parentElement as HTMLVideoElement;
+                  dbg(`mp4 source error clip=${i} ns=${v.networkState} rs=${v.readyState} -> dropped`);
+                  lost(i);
+                }} />}
           </video>
         ) : null,
       )}
@@ -288,7 +358,9 @@ export default function HeroStage({ hud, children }: { hud: ReactNode; children:
     resume.current = () => go(at);
   });
   useEffect(() => {
+    dbg("stage mounted");
     const io = new IntersectionObserver(([e]) => {
+      dbg(`in view=${e.isIntersecting}`);
       setIdle(!e.isIntersecting);
       if (e.isIntersecting) resume.current();
     });
@@ -303,6 +375,7 @@ export default function HeroStage({ hud, children }: { hud: ReactNode; children:
   // Pulled up under the bar's place (-mt-[50px]), so the clip shows around the floating bar at the top.
   return (
     <section ref={stage} className="relative mx-[calc(50%-50vw)] -mt-[50px] flex min-h-svh items-end">
+      <HeroDebug />
       <HeroShotLayers at={at} off={sky} idle={idle} hidden={hidden} missing={missing} lost={lost} />
       {sky && (
         <div className={`absolute inset-0 animate-[sky-in_1.6s_ease-out_both] ${FADE_OUT}`}>
